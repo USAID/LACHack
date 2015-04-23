@@ -1,0 +1,336 @@
+---
+title: "Text analysis tools for LACHack"
+author: "Craig Jolley"
+date: "April 22, 2015"
+output: html_document
+---
+
+This document contains a few text analysis and visualization tools in R that might be useful for LACHack participants. Even if you're new to R, this should give you some ideas about how to work with text data.
+
+First, load the packages we need. If you haven't installed these yet, you'll need to do so using install.package("packageName")
+
+```{r, message=FALSE}
+library(stringr)     # search and replace
+library(tm)          # text mining
+library(XML)         # needed to read XLSX data
+library(plyr)        # rearranging data structures
+library(dplyr)       # rearranging data structures
+library(ggplot2)     # plotting 
+library(wordcloud)   # construct word clouds
+library(Rgraphviz)   # simple graph visualizations
+library(igraph)      # nicer graph visualizations
+library(RWeka)       # data mining 
+library(pscl)        # from the Political Science Comuptational 
+                     # Laboratory at Stanford U.
+library(topicmodels) # Latent Dirichlet Allocation
+```
+
+First, let's import our data set and do some initial cleanup. The method I'm using (xlsxToR by Schaun Wheeler) is sort of slow, but is the only thing that I've found to be consistently reliable for large Twitter data sets with accented characters, weird emoticons, mid-tweet line breaks, etc. 
+
+```{r, message=FALSE}
+filename <- 'HN-Extortion.xlsx'   # replace with the file you want to analyze
+source('xlsxToR.r')
+xlsx_data <- xlsxToR(filename)
+wb <- xlsx_data[2:nrow(xlsx_data),]
+names(wb) <- c("GUID","Date_GMT","URL","Contents","Author","Name","Location",
+              "Sentiment","Source","Klout","Posts","Followers","Following",
+              "Gender")
+# fix date/time stamps
+wb$Date_GMT <- as.POSIXlt(as.numeric(wb$Date_GMT)*24*3600,origin="1899-12-30",tz='UTC')
+# remove graphical characters and emoticons, leave text only
+wb$Contents_text <- str_replace_all(wb$Contents,"[^[:graph:]]"," ")
+# remove retweets
+noRT <- wb[grep("^RT",wb$Contents,invert=TRUE),]
+```
+
+We can visualize the increase in posts with time:
+
+```{r}
+hist(wb$Date_GMT,breaks="weeks",xlab="Date")
+```
+
+Suppose we only care about January of 2014. We can also make a histogram of a subset of the data, to see whether there were any dramatic spikes in content in January 2014.
+
+```{r}
+hist(wb[wb$Date_GMT > "2013-12-31" & wb$Date_GMT < "2014-02-01",]$Date_GMT,
+     breaks="days",xlab="Date")
+```
+
+We might also be interested in what some of the most commonly-used words are. We'll start by using the tm package to create and process a "corpus":
+
+```{r}
+c <- Corpus(DataframeSource(data.frame(noRT$Contents_text,stringsAsFactors=FALSE)))
+# These steps create a modified version of our corpus, removing punctuation, 
+# numbers, overly-common words (stopwords), and whitespace, and converting 
+# everything to lower-case.
+c_mod <- tm_map(c, removePunctuation)
+c_mod <- tm_map(c_mod, removeNumbers)
+c_mod <- tm_map(c_mod, removeWords, stopwords("spanish"))
+c_mod <- tm_map(c_mod, stripWhitespace)
+c_mod <- tm_map(c_mod, content_transformer(tolower))
+# Create a document term matrix
+dtm <- DocumentTermMatrix(c_mod)
+# This matrix is very large and very sparse; we can trim it down by keeping 
+# only the most common terms. Play around a little with the parameter in 
+# removeSparseTerms() to see how it affects the size of the reduced matrix.
+dtm_sparse <- removeSparseTerms(dtm, 0.995) 
+# Cut it down further, to see only the terms that appear at least 200 times in
+# our dataset. Do these seem sensible?
+highFreq <- findFreqTerms(dtm_sparse, lowfreq=200)
+```
+
+Now we can plot the most common terms used in this dataset:
+
+```{r}
+highFreq_v <- colSums(as.matrix(dtm_sparse[, highFreq]))
+highFreq_v_df <- data.frame(word = names(highFreq_v),
+                                     freq = highFreq_v)
+highFreq_v_df <- arrange(highFreq_v_df,freq)
+ggplot(highFreq_v_df, aes(reorder(word, -freq), freq)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  xlab("High frequency words") +
+  ylab("Freqeuncy") + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.2)) 
+```
+
+Bar graphs are nice, but some people prefer fancy word clouds:
+
+```{r, message=FALSE}
+wordcloud(c_mod,scale=c(5,0.5),max.words=100,random.order=FALSE,rot.per=0.35,
+          use.r.layout=FALSE,colors=brewer.pal(8,"Dark2"))
+```
+
+We might also be interested in which words are frequently used together. There are two ways to visualize this; we'll first do it using Rgraphviz:
+
+```{r}
+plot(dtm_sparse, 
+     terms = findFreqTerms(dtm_sparse, 
+                           lowfreq = 250), 
+     corThreshold = 0.1)
+```
+
+This is OK, but it's sort of ugly and we don't have much control over the appearance. We can make something nicer-looking using igraph, but it's a little more work:
+
+```{r}
+dtMatrix <- as.matrix(dtm_sparse)
+# matrix should be binary: 0 if a term is not contained in a tweet, 1 if it is
+dtMatrix[dtMatrix >= 1] <- 1
+# make a term adjacency matrix
+termMatrix <- t(dtMatrix) %*% dtMatrix
+# Remove weak correlations. Play with the value of alpha to get more or fewer 
+# correlations in the plot.
+alpha <- 5.0
+cutoff <- mean(termMatrix) + alpha*sd(termMatrix)
+termMatrix[termMatrix < cutoff] <- 0 # remove weak edges
+# build a graph from our adjacency matrix
+g <- graph.adjacency(termMatrix,weighted=TRUE,mode="undirected",diag=FALSE)
+g <- simplify(g) # remove loops
+g = delete.vertices(g,which(degree(g)<1)) # get rid of singletons
+V(g)$label <- V(g)$name # set labels
+V(g)$degree <- degree(g) # annotate with degree
+set.seed(12345)
+layout1 <- layout.fruchterman.reingold(g)
+V(g)$label.cex <- 1.2*V(g)$degree / max(V(g)$degree)+1
+V(g)$label.color <- rgb(0,0,0.2,0.8)
+V(g)$frame.color <- NA
+egam <- (log(E(g)$weight)+0.1)/max(log(E(g)$weight)+0.1)
+E(g)$color <- rgb(.5,.5,0,egam)
+E(g)$width <- egam
+plot(g,layout=layout1)
+```
+
+When we export data from Crimson Hexagon, it includes the results of sentiment analysis calculation. We can improve our plot of the overall increase in volume by separating it out into positive, neutral, and negative content:
+
+```{r}
+pos <- wb[wb$Sentiment=="Basic Positive",]
+neg <- wb[wb$Sentiment=="Basic Negative",]
+neut <- wb[wb$Sentiment=="Basic Neutral",]
+n <- 100
+b <- seq(min(wb$Date_GMT),max(wb$Date_GMT),length.out=n)
+sentiment = data.frame(date = as.POSIXlt(hist(pos$Date_GMT,breaks=b,
+                                              plot=FALSE)$mids,
+                                         origin="1970-01-01",tz='UTC'),
+                       positive=hist(pos$Date_GMT,breaks=b,plot=FALSE)$counts,
+                       neutral=hist(neut$Date_GMT,breaks=b,plot=FALSE)$counts,
+                       negative=hist(neg$Date_GMT,breaks=b,plot=FALSE)$counts)
+sentiment$all = sentiment$positive + sentiment$negative + sentiment$neutral
+sentiment$pos_fraction = sentiment$positive / sentiment$all
+sentiment$neut_fraction = sentiment$neutral / sentiment$all
+sentiment$neg_fraction = sentiment$negative / sentiment$all
+# need to fix NaNs
+sentiment$pos_fraction[is.nan(sentiment$pos_fraction)] <- 0
+sentiment$neut_fraction[is.nan(sentiment$neut_fraction)] <- 0
+sentiment$neg_fraction[is.nan(sentiment$neg_fraction)] <- 0
+# stacked plot of total volume:
+#TODO: this could be prettier
+maxval <- max(sentiment$positive + sentiment$negative + sentiment$neutral)
+plot(sentiment$date,sentiment$negative,type='l',col='red',ylim=c(0,maxval))
+lines(sentiment$date,sentiment$all,type='l',col='green')
+lines(sentiment$date,sentiment$neutral + sentiment$negative,type='l',
+      col='gray')
+```
+
+This isn't very pretty (improvements welcome!), but it gets the point across. Note how the positive sentiment is just a thin icing on top; this isn't a subject that people feel good about.
+
+``` {r}
+# plot of relative volume
+plot(sentiment$date,sentiment$neg_fraction,type='l',col='red',ylim=c(0,1),
+     ylab="Fraction", xlab="Date")
+lines(sentiment$date,sentiment$neut_fraction,type='l',col='gray')
+lines(sentiment$date,sentiment$pos_fraction,type='l',col='green')
+```
+
+Things are pretty noisy initially (because the volume before 2012 is so low), but after that things stabilize so that only about 10% of the conversation is has a positive tone. The neutral and negative categories were nearly equal in 2013, but since then the overall tone has become more neutral.
+
+If Twitter users supply a recognizable first name, Crimson Hexagon will hazard a guess about their gender. How has the gender ratio in this conversation changed over time?
+
+``` {r}
+female <- wb[wb$Gender=="F",]
+male <- wb[wb$Gender=="M",]
+n <- 50
+b <- seq(min(wb$Date_GMT),max(wb$Date_GMT),length.out=n)
+gender = data.frame(date = as.POSIXlt(hist(pos$Date_GMT,breaks=b,plot=FALSE)$mids,
+                                         origin="1970-01-01",tz='UTC'),
+                       female=hist(female$Date_GMT,breaks=b,plot=FALSE)$counts,
+                       male=hist(male$Date_GMT,breaks=b,plot=FALSE)$counts)
+gender$ratio <- gender$female / (gender$male + gender$male)
+# need to fix NaNs
+gender$ratio[is.nan(gender$ratio)] <- 0
+plot(gender$date,gender$ratio,type='l',ylab="Ratio of women to men",xlab="Date")
+```
+
+All these plots are nice, but what if I just want to read some posts? We can use data frame subsetting to find, for example, posts with a positive sentiment, written by men in Tegucigalpa in 2015:
+
+``` {r}
+wb[wb$Sentiment=="Basic Positive" & wb$Gender=="M" & wb$Date_GMT > "2015-1-1" 
+   & wb$Location == "Tegucigalpa, Honduras",]$Contents
+```
+
+There is a lot more you can do to analyze text in R; so far we've focused on a quick tour of some tools that give easy-to-interpret results. Here are a couple of more advanced tools that don't always work but can be useful when they do.
+
+Item Response Theory assumes that all of your text data falls somewhere along a single underlying continuum -- it might be positive/negative, liberal/conservative, etc. Even if there isn't really a single underlying continuum, IRT will find one and assign your posts to it anyway! Be skeptical of your results.
+
+``` {r, results='hide'}
+# This calculation can take a really long time; if we just run in on 100 posts
+# (for demonstration purposes) then it only takes about a minute.
+n <- 100
+noRT <- noRT[sample(nrow(noRT),n),]
+# do the same processing of the corpus we used earlier
+irtCorpus <- VCorpus(DataframeSource(data.frame(noRT$Contents_text,
+                                stringsAsFactors = FALSE)))
+irtCorpus <- tm_map(irtCorpus, removePunctuation)
+irtCorpus <- tm_map(irtCorpus, removeNumbers)
+irtCorpus <- tm_map(irtCorpus, removeWords, stopwords("spanish"))
+irtCorpus <- tm_map(irtCorpus, stripWhitespace)
+irtCorpus <- tm_map(irtCorpus, content_transformer(tolower))
+# A different method for generating a document-term matrix. If you have lavish 
+# computational resources available, try changing the max argument below to 2 to 
+# look at bigrams (two-word phrases) in addition to unigrams.
+BigramTokenizer<- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1)) 
+datmat <- DocumentTermMatrix(irtCorpus, control = list(tokenize = BigramTokenizer))
+dat <- as.matrix(datmat)    
+# Track document names (here, screenNames) as rownames to matrix
+doc_names <- noRT$Author
+# Assign all cells > 1 to be 1 
+dat[dat>1] <- 1
+rownames(dat) <- seq(1:nrow(dat))
+# Finally, we need to remove authors/docs that used zero grams, as they cannot 
+# be (meaningfully) scaled.
+if(min(colSums(dat))==0){
+  print("some authors used no -grams")
+  dat <- dat[,colSums(dat) > 1]
+}
+# This is called "rollcall" because it was originally invented to analyze
+# the voting records of US Congresspeople
+rc <- rollcall(data=dat) 
+# estimate the model -- this can take a while
+# 100 tweets: ~60s on my laptop
+mod <- ideal(rc,store.item=T)
+```
+
+For each term, IRT estimates "difficulty" and "discrimination" parameters. When we plot these against each other, we should see a "flying V" shape if it converges, so that many points have difficulty and discrimination near zero and a few have high difficulty and either high or low  discrimination. 
+
+``` {r} 
+plot(mod$betabar[,2], mod$betabar[,1], 
+     xlab="difficulty", ylab="discrimination", main="-grams")
+```
+
+In this case, it sort of works. Let's look at 10 posts from one end of our continuum scale:
+
+``` {r}
+check_for_scaling <- noRT[order(mod$xbar), ]$Contents
+head(check_for_scaling, n=10)
+```
+
+And the other:
+
+``` {r}
+tail(check_for_scaling, n=10)
+```
+
+What are our most discriminating terms?
+
+``` {r, results='hold'}
+grams <- data.frame(grams=colnames(dat), discrim = mod$betabar[,1])
+rownames(grams) <- NULL
+grams <- grams[with(grams, order(discrim)), ]
+head(grams, n=15)
+tail(grams, n=15)
+```
+
+Finally, a histogram can tell us whether the distribution along our contiuum is unimodal or polarized:
+
+``` {r}
+hist(mod$xbar, breaks=15,  main="Distribution of Scaled Positions", xlab="scale")
+```
+
+and we can quantify uncertainty:
+
+``` {r}
+o <- order(mod$xbar)
+plot(mod$xbar[o], seq(1:length(mod$xbar)), main="Scale w/ Error Bars", xlab="scale", ylab="Docs")
+lo <- NULL
+hi <- NULL
+for(i in 1:dim(dat)[1]){
+  l <- quantile(mod$x[1:50,i,1], 0.025)
+  lo <- c(lo, l)
+  h <- quantile(mod$x[1:50,i,1], 0.975)
+  hi <- c(hi, h)  
+}
+# add confidence intervals
+segments(lo[o], seq(1:length(mod$xbar)), hi[o],seq(1:length(mod$xbar)))
+# draw original points, if they are obscured:
+points(mod$xbar[o], seq(1:length(mod$xbar)), col="red")
+```
+
+Finally, we can use the document-term matrix we built for the IRT to run Latent Dirichlet Allocation (LDA). This is a method that defines a set of topics and assumes that each post can be represented as a mixture of topics. First, let's see the terms in each topic:
+
+``` {r}
+numTopics <- 10
+myLDA <- LDA(dat, k=numTopics, method="VEM", control=list(estimate.alpha=TRUE))
+topic_term <- posterior(myLDA)[[1]]
+for(i in 1:nrow(topic_term)){
+  print(paste("Topic #", i))
+  print(colnames(topic_term)[topic_term[i,] > .02])
+}
+```
+
+Notice that the terms identified above as being very common in this dataset are included in virtually all of the topics -- these don't provide much discriminating power. (Would it be better to remove them from the document-term matrix?)
+How are tweets (or fractions of them, at least) assigned to our various topics?
+
+``` {r}
+doc_topic <- posterior(myLDA)[[2]]
+heights <- apply(doc_topic, 2, sum)
+barplot(heights, xlab="Topic", ylab="Count of Parts of Docs",
+        main="Pseudo-Counts of Topics")
+```
+
+Say we're particularly interested in topic 5. What are some of the posts that are strongly influenced by that topic?
+
+``` {r}
+of_interest <- which(doc_topic[,5] > 0.5)
+noRT$Contents[of_interest[1:10]]
+```
+
+This probably isn't a really great topic breakdown; this is just a demonstration example. A better approach might be to use a larger number of tweets (we only used 100 here) and a larger number of topics, and only pay attention to the topics that pulled in a lot of content.
