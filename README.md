@@ -1,7 +1,4 @@
 # LACHack
 USAID Latin America and Caribbean Open Data Hackathon 2015.
 
-The three hackathon groups are as follows:
-(1) Official USAID Data: A look at Mexico since the 1980s through funding, projects, and evaluation reports.
-(2) Social Media and USAID funded America's Barometer Public Opinion Data: What can they tell us about patterns of crime and hotspot targetting?
-(3) Shadow data: Using nontraditional data to understand crime and insecurity - innovating third party data to read between the lines of official data, social media data, and public opinion data.
+LACHack 2015 will look at USAID funding flows and target the issue of crime and violence to determine what information USAID has collected and shared publicly, how this information compares and is supported by high quality open datasets such as AmericaBarometer, and determine what additional datasets would be needed for improved policy and programmatic decision-making. Any models of combining these datasets will be used to inform USAID of how to utilize historical data from its fifty years of programming, and what changes can be made to how USAID collects and shares data in future programming
