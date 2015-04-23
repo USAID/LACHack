@@ -7,46 +7,51 @@ output: html_document
 
 This document contains a few text analysis and visualization tools in R that might be useful for LACHack participants. Even if you're new to R, this should give you some ideas about how to work with text data.
 
-First, import the libraries we need. If you haven't installed these yet, you'll need to do so using install.package("packageName")
+First, load the packages we need. If you haven't installed these yet, you'll need to do so using install.package("packageName")
 
 ```{r, message=FALSE}
-library(XLConnect)   # library for reading XLSX data
-library(tm)          # library for text mining
-library(dplyr)       # library for rearranging data structures
-library(ggplot2)     # plotting library
-library(wordcloud)   # library to construct word clouds
+library(stringr)     # search and replace
+library(tm)          # text mining
+library(XML)         # needed to read XLSX data
+library(plyr)        # rearranging data structures
+library(dplyr)       # rearranging data structures
+library(ggplot2)     # plotting 
+library(wordcloud)   # construct word clouds
 library(Rgraphviz)   # simple graph visualizations
 library(igraph)      # nicer graph visualizations
-require(RWeka)       # data mining library
-require(pscl)        # library from the Political Science Comuptational 
+library(RWeka)       # data mining 
+library(pscl)        # from the Political Science Comuptational 
                      # Laboratory at Stanford U.
-require(topicmodels) # Latent Dirichlet Allocation
+library(topicmodels) # Latent Dirichlet Allocation
 ```
 
-First, let's import our data set and do some initial cleanup:
+First, let's import our data set and do some initial cleanup. The method I'm using (xlsxToR by Schaun Wheeler) is sort of slow, but is the only thing that I've found to be consistently reliable for large Twitter data sets with accented characters, weird emoticons, mid-tweet line breaks, etc. 
 
-```{r}
+```{r, message=FALSE}
 filename <- 'HN-Extortion.xlsx'   # replace with the file you want to analyze
-wb <- readWorksheetFromFile(filename,sheet=1)
-# make the column names look a little nicer
-names(wb) = c("GUID","Date_GMT","URL","Contents","Author","Name","Location",
+source('xlsxToR.r')
+xlsx_data <- xlsxToR(filename)
+wb <- xlsx_data[2:nrow(xlsx_data),]
+names(wb) <- c("GUID","Date_GMT","URL","Contents","Author","Name","Location",
               "Sentiment","Source","Klout","Posts","Followers","Following",
               "Gender")
-# fix time zones
-wb$Date_GMT <- as.POSIXlt(as.character(wb$Date_GMT),tz="UTC")
+# fix date/time stamps
+wb$Date_GMT <- as.POSIXlt(as.numeric(wb$Date_GMT)*24*3600,origin="1899-12-30",tz='UTC')
+# remove graphical characters and emoticons, leave text only
+wb$Contents_text <- str_replace_all(wb$Contents,"[^[:graph:]]"," ")
 # remove retweets
 noRT <- wb[grep("^RT",wb$Contents,invert=TRUE),]
 ```
 
 We can visualize the increase in posts with time:
 
-```{r, echo=FALSE}
+```{r}
 hist(wb$Date_GMT,breaks="weeks",xlab="Date")
 ```
 
 Suppose we only care about January of 2014. We can also make a histogram of a subset of the data, to see whether there were any dramatic spikes in content in January 2014.
 
-```{r, echo=FALSE}
+```{r}
 hist(wb[wb$Date_GMT > "2013-12-31" & wb$Date_GMT < "2014-02-01",]$Date_GMT,
      breaks="days",xlab="Date")
 ```
@@ -54,7 +59,7 @@ hist(wb[wb$Date_GMT > "2013-12-31" & wb$Date_GMT < "2014-02-01",]$Date_GMT,
 We might also be interested in what some of the most commonly-used words are. We'll start by using the tm package to create and process a "corpus":
 
 ```{r}
-c <- Corpus(DataframeSource(data.frame(noRT$Contents,stringsAsFactors=FALSE)))
+c <- Corpus(DataframeSource(data.frame(noRT$Contents_text,stringsAsFactors=FALSE)))
 # These steps create a modified version of our corpus, removing punctuation, 
 # numbers, overly-common words (stopwords), and whitespace, and converting 
 # everything to lower-case.
@@ -63,9 +68,6 @@ c_mod <- tm_map(c_mod, removeNumbers)
 c_mod <- tm_map(c_mod, removeWords, stopwords("spanish"))
 c_mod <- tm_map(c_mod, stripWhitespace)
 c_mod <- tm_map(c_mod, content_transformer(tolower))
-# I need to repeat these two steps again, or else some stopwords are missed
-c_mod <- tm_map(c_mod, removeWords, stopwords("spanish")) 
-c_mod <- tm_map(c_mod, stripWhitespace)
 # Create a document term matrix
 dtm <- DocumentTermMatrix(c_mod)
 # This matrix is very large and very sparse; we can trim it down by keeping 
@@ -215,18 +217,15 @@ Item Response Theory assumes that all of your text data falls somewhere along a 
 n <- 100
 noRT <- noRT[sample(nrow(noRT),n),]
 # do the same processing of the corpus we used earlier
-irtCorpus <- VCorpus(DataframeSource(data.frame(noRT$Contents,
+irtCorpus <- VCorpus(DataframeSource(data.frame(noRT$Contents_text,
                                 stringsAsFactors = FALSE)))
 irtCorpus <- tm_map(irtCorpus, removePunctuation)
 irtCorpus <- tm_map(irtCorpus, removeNumbers)
 irtCorpus <- tm_map(irtCorpus, removeWords, stopwords("spanish"))
 irtCorpus <- tm_map(irtCorpus, stripWhitespace)
 irtCorpus <- tm_map(irtCorpus, content_transformer(tolower))
-# I need to repeat these two steps again, or else some stopwords are missed
-irtCorpus <- tm_map(irtCorpus, removeWords, stopwords("spanish")) 
-irtCorpus <- tm_map(irtCorpus, stripWhitespace)
 # A different method for generating a document-term matrix. If you have lavish 
-# computational resources available, change the max argeument below to 2 to 
+# computational resources available, try changing the max argument below to 2 to 
 # look at bigrams (two-word phrases) in addition to unigrams.
 BigramTokenizer<- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1)) 
 datmat <- DocumentTermMatrix(irtCorpus, control = list(tokenize = BigramTokenizer))
@@ -334,4 +333,4 @@ of_interest <- which(doc_topic[,5] > 0.5)
 noRT$Contents[of_interest[1:10]]
 ```
 
-
+This probably isn't a really great topic breakdown; this is just a demonstration example. A better approach might be to use a larger number of tweets (we only used 100 here) and a larger number of topics, and only pay attention to the topics that pulled in a lot of content.
