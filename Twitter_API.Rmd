@@ -1,0 +1,74 @@
+---
+title: "Using the Twitter API in R"
+author: "Craig Jolley"
+date: "April 27, 2015"
+output: html_document
+---
+
+This document will walk you through accessing the Twitter API in R and putting the posts you download in a data frame. *NOTE:* This will require you to open your own Twitter developer account and to create and register an application. This is free and will only take a few minutes. The version of this document being posted on GitHub will not work, however, because the keys below will be gibberish.
+
+First, point your browser to <http://apps.twitter.com/app/new>, and follow the instructions there. Once you've created an account and registered a new application, you will want to access the "Keys and Access Tokens" panel. There you will find, under "Application Settings"
+
+* A 25-character "Consumer Key (API Key)"
+* A 50-character "Consumer Secret (API Secret)"
+
+Access tokens aren't generated automatically, but you can do it with a single click. One you do, you'll see this under "Your Access Token":
+
+* A 50-character "Access Token"
+* A 45-charecter "Access Token Secret"
+
+You'll need to copy and paste these into the code chunk below:
+
+```{r, results="hide"}
+library(twitteR)
+
+# insert your keys here (NOTE: these won't work!)
+key <- 'aZolKBHmBqotTNpf5u1gk5SJ3'
+secret <- 'S8wSc8KNImg12Ho1edkzM7HkUX3GRx13JkFipWln4Bvw0mP8ER'
+access <- '86256A638-2vhtPUVAR5NVHzduKp9396jw1ipToSkT1k7KoFdQ'
+access_secret <- '1wH5xEwB6Y7Pr5Ta6GNegFZDU6HOzIq17KMB0q3ib0e9Z'
+
+# log in using your keys
+setup_twitter_oauth(key,secret,access,access_secret)
+1
+# Let's get up to 25 posts containing "LACHack"
+lachack <- searchTwitter("LACHack",n=25)
+```
+
+This is formatted as a list, which isn't super-useful. We can make it look a little nicer.
+
+```{r, message=FALSE}
+library(plyr)
+tmp <- do.call("rbind", lapply(lachack,as.data.frame))
+lachack_f <- data.frame(GUID=tmp$id, Date_GMT=tmp$created, 
+                        Contents=tmp$text, Author=tmp$screenName)
+head(lachack_f$Contents)
+```
+
+Note that the Twitter API doesn't provide some of the data in our pre-exported datasets (user statistics, sentiment analysis, etc.) but does provide some other useful information that those datasets don't (number of retweets, etc.) You can find extensive documentation of the TwitteR package at <http://cran.r-project.org/web/packages/twitteR/twitteR.pdf>.
+
+One feature of searchTwitter() that is useful to know about is the geocode argument, which lets us get posts coming from within a specified radius of a certain lat/long pair. You can get coordinates easily at <http://www.latlong.net>. For example, San Pedro Sula, Honduras is at lat=15.5, long=-88.03. Say we want anything within 20km of that point:
+
+``` {r}
+sps <- searchTwitter("",n=10,geocode='15.5,-88.03,20km')
+sps_f <- do.call("rbind", lapply(sps,as.data.frame))
+```
+
+All of these posts were within the last few minutes:
+
+``` {r}
+sps_f$created
+```
+
+And here's what they have to say:
+
+```{r}
+sps_f$text
+```
+
+It's also possible to see what's trending now in (or at least near) SPS. This requires using a Yahoo Where on Earth ID; you can look these up at <http://zourbuth.com/tools/woeid/> or use lat/long coordinates. Apparently, the closest Twitter-calculated trend location to SPS is actually in Guatemala:
+
+```{r}
+closestTrendLocations(lat=15.5, long=-88.03)
+getTrends(closestTrendLocations(lat=15.5, long=-88.03)[1,3])$name
+```
